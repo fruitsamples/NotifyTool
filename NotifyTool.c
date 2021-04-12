@@ -1,11 +1,11 @@
 /*
-    File:       NotifyListener.c
+    File:       NotifyTool.c
 
     Contains:   Sample showing how to use the BSD notify API <x-man-page://3/notify>.
 
     Written by: DTS
 
-    Copyright:  Copyright (c) 2007 Apple Inc. All Rights Reserved.
+    Copyright:  Copyright (c) 2007-2012 Apple Inc. All Rights Reserved.
 
     Disclaimer: IMPORTANT: This Apple software is supplied to you by Apple Inc.
                 ("Apple") in consideration of your agreement to the following
@@ -49,8 +49,6 @@
                 OTHERWISE, EVEN IF APPLE HAS BEEN ADVISED OF THE POSSIBILITY OF
                 SUCH DAMAGE.
 
-    Change History (most recent first):
-
 */
 
 #include <assert.h>
@@ -62,6 +60,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <dispatch/dispatch.h>
 
 #include <CoreFoundation/CoreFoundation.h>
 
@@ -71,6 +70,7 @@ static void PrintUsage(void)
     fprintf(stderr, "       %*s listen | listenFD <name>...\n", (int) strlen(getprogname()), "");
     fprintf(stderr, "       %*s listenMach <name>...\n", (int) strlen(getprogname()), "");
     fprintf(stderr, "       %*s listenCF <name>...\n", (int) strlen(getprogname()), "");
+    fprintf(stderr, "       %*s listenGCD <name>...\n", (int) strlen(getprogname()), "");
 }
 
 static const char * NotifyErrorToString(uint32_t noteErr)
@@ -218,7 +218,7 @@ static int ListenUsingFileDescriptor(size_t noteCount, const char **noteNames)
                 
                 // Have to swap to native endianness <rdar://problem/5352778>.
                 
-                token = ntohl(token);
+                token = (int)ntohl(token);
                 
                 // Find the string associated with this token and print it.
                 
@@ -305,6 +305,8 @@ static void MyCFMachPortCallBack(
     // runloop when a message arrives on the notification port.  We just 
     // extrac the token (msgh_id) and call print it.
 {
+    #pragma unused(port)
+    #pragma unused(size)
     const MyCFMachPortCallBackInfo *    myInfo;
     
     myInfo = (const MyCFMachPortCallBackInfo *) info;
@@ -354,7 +356,7 @@ static int ListenUsingCoreFoundation(size_t noteCount, const char **noteNames)
         retVal = EXIT_FAILURE;
     } else {
         MyCFMachPortCallBackInfo    myInfo;
-        CFMachPortContext           context = { 0 };
+        CFMachPortContext           context = { 0 , NULL, NULL, NULL, NULL };
         CFMachPortRef               cfPort;
         Boolean                     shouldFreeInfo;
         CFRunLoopSourceRef          rls;
@@ -417,6 +419,49 @@ static int ListenUsingCoreFoundation(size_t noteCount, const char **noteNames)
     return retVal;
 }
 
+static int ListenUsingGCD(size_t noteCount, const char **noteNames)
+{
+    int         retVal;
+    uint32_t    noteErr;
+    size_t      noteIndex;
+    int         noteTokens[noteCount];
+    const int * noteTokensPtr;
+
+    // We need to capture the base of the noteTokens array, but the compiler won't let us do that
+    // because it's of variable size.  In our specific case this isn't a problem because, if things
+    // go well, we never leave this routine but rather block forever in dispatch_main().  In a real
+    // program you'd have to be a bit more careful (but then again, in a real program you wouldn't be
+    // registering for an unbounded number of arbitrary notifications :-).
+    
+    noteTokensPtr = &noteTokens[0];
+
+    noteErr = NOTIFY_STATUS_OK;
+    for (noteIndex = 0; noteIndex < noteCount; noteIndex++) {
+        noteErr = notify_register_dispatch(noteNames[noteIndex], &noteTokens[noteIndex], dispatch_get_main_queue(), ^(int token) {
+            PrintToken(
+                token,
+                noteCount,
+                noteTokensPtr, 
+                noteNames
+            );
+        });
+        if (noteErr != NOTIFY_STATUS_OK) {
+            break;
+        }
+    }
+    if (noteErr != NOTIFY_STATUS_OK) {
+        PrintNotifyError("registration failed", noteNames[noteIndex], noteErr);
+        retVal = EXIT_FAILURE;
+    } else {
+        fprintf(stdout, "Listening using GCD:\n");
+        fflush(stdout);
+        dispatch_main();
+        assert(0);              // dispatch_main() should never return
+        retVal = EXIT_FAILURE;
+    }
+    return retVal;
+}
+
 int main(int argc, const char **argv)
 {
     int         retVal;
@@ -426,13 +471,15 @@ int main(int argc, const char **argv)
         retVal = EXIT_FAILURE;
     } else {
         if (strcasecmp(argv[1], "post") == 0) {
-            retVal = PostNotifications(argc - 2, &argv[2]);
+            retVal = PostNotifications( ((size_t) argc) - 2, &argv[2]);
         } else if ((strcasecmp(argv[1], "listen") == 0) || (strcasecmp(argv[1], "listenFD") == 0)) {
-            retVal = ListenUsingFileDescriptor(argc - 2, &argv[2]);
+            retVal = ListenUsingFileDescriptor( ((size_t) argc) - 2, &argv[2]);
         } else if (strcasecmp(argv[1], "listenMach") == 0) {
-            retVal = ListenUsingMach(argc - 2, &argv[2]);
+            retVal = ListenUsingMach( ((size_t) argc) - 2, &argv[2]);
         } else if (strcasecmp(argv[1], "listenCF") == 0) {
-            retVal = ListenUsingCoreFoundation(argc - 2, &argv[2]);
+            retVal = ListenUsingCoreFoundation( ((size_t) argc) - 2, &argv[2]);
+        } else if (strcasecmp(argv[1], "listenGCD") == 0) {
+            retVal = ListenUsingGCD( ((size_t) argc) - 2, &argv[2]);
         } else {
             PrintUsage();
             retVal = EXIT_FAILURE;
