@@ -218,7 +218,7 @@ static int ListenUsingFileDescriptor(size_t noteCount, const char **noteNames)
                 
                 // Have to swap to native endianness <rdar://problem/5352778>.
                 
-                token = ntohl(token);
+                token = (int)ntohl(token);
                 
                 // Find the string associated with this token and print it.
                 
